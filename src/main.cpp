@@ -22,8 +22,8 @@
 
 #define LEFT_MOTOR 5
 #define RIGHT_MOTOR 6
-#define LEFT_topSpeed 255
-#define RIGHT_topSpeed 255
+#define LEFT_topSpeed 100
+#define RIGHT_topSpeed 100
 
 TinyGPSPlus gps;
 Adafruit_HMC5883_Unified mag = Adafruit_HMC5883_Unified(12345);
@@ -149,31 +149,35 @@ double get_rel_brng_update_dist(double lat2, double lon2)
   {
     lat1 = gps.location.lat();
     lon1 = gps.location.lng();
+
+    // theta
+    lat1 *= toRadian;
+    lat2 *= toRadian;
+
+    // labmda
+    lon1 *= toRadian;
+    lon2 *= toRadian;
+
+    // Delta coordinates
+    // double deltaLat_r = (lat2 - lat1);
+    // double deltaLon_r = (lon2 - lon1);
+
+    // Distance
+    double a = sin((lat2 - lat1) / 2) * sin((lat2 - lat1) / 2) + cos(lat1) * cos(lat2) * sin((lon2 - lon1) / 2) * sin((lon2 - lon1) / 2);
+    double c = 2 * atan2(sqrt(a), sqrt(1 - a));
+
+    double y = sin(lon2 - lon1) * cos(lat2);
+    double x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(lon2 - lon1);
+    double brng = atan2(y, x) * 57.3; // *******  +/-
+    dist = 6371 * c * 1000;
+
+    double heading = heading_compass(); // updates compass heading
+    return (brng - heading);
   }
-
-  // theta
-  lat1 *= toRadian;
-  lat2 *= toRadian;
-
-  // labmda
-  lon1 *= toRadian;
-  lon2 *= toRadian;
-
-  // Delta coordinates
-  // double deltaLat_r = (lat2 - lat1);
-  // double deltaLon_r = (lon2 - lon1);
-
-  // Distance
-  double a = sin((lat2 - lat1) / 2) * sin((lat2 - lat1) / 2) + cos(lat1) * cos(lat2) * sin((lon2 - lon1) / 2) * sin((lon2 - lon1) / 2);
-  double c = 2 * atan2(sqrt(a), sqrt(1 - a));
-
-  double y = sin(lon2 - lon1) * cos(lat2);
-  double x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(lon2 - lon1);
-  double brng = atan2(y, x) * 57.3; // *******  +/-
-  dist = 6371 * c * 1000;
-
-  double heading = heading_compass(); // updates compass heading
-  return (brng - heading);
+  else
+  {
+    return 1000;
+  }
 }
 
 void motor(double relBearing)
@@ -211,14 +215,24 @@ void autodrive()
   while (1)
   {
     double rel_brng = get_rel_brng_update_dist(points_lat[index], points_lon[index]);
-    motor(rel_brng);
-    if (dist < WAYPOINT_THRESHHOLD)
+    if (rel_brng == 1000)
     {
-      index++;
+      motor_bluetooth(0, 0);
+      ss_bluetooth.listen();
+      ss_bluetooth.println("Waiting for GPS");
+      delay(1000);
     }
-    if (index >= no_points * 2)
+    else
     {
-      break;
+      motor(rel_brng);
+      if (dist < WAYPOINT_THRESHHOLD)
+      {
+        index++;
+      }
+      if (index >= no_points * 2)
+      {
+        break;
+      }
     }
   }
   auto_mode = false;
