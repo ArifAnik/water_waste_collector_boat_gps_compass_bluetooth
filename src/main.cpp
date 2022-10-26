@@ -20,22 +20,29 @@
 #define dummy_lat 30
 #define dummy_lng -80
 
-#define LEFT_MOTOR 5
-#define RIGHT_MOTOR 6
-#define LEFT_topSpeed 100
-#define RIGHT_topSpeed 100
+#define left_motor_pwm 3
+#define left_motor_A 4
+#define left_motor_B 5
+#define right_motor_C 6
+#define right_motor_D 7
+#define right_motor_pwm 8
+#define waste_pull_motor 11
+#define esp_pin 13
+
+#define LEFT_topSpeed 150
+#define RIGHT_topSpeed 150
 
 TinyGPSPlus gps;
 Adafruit_HMC5883_Unified mag = Adafruit_HMC5883_Unified(12345);
 
 SoftwareSerial ss_gps(GPS_RX, GPS_TX);
-SoftwareSerial ss_bluetooth(GPS_RX, GPS_TX);
+SoftwareSerial ss_bluetooth(A3, A2);
 
 double lat1, lon1, k_L = LEFT_topSpeed / 180, k_R = RIGHT_topSpeed / 180;
 double coordinates_lat[4], coordinates_lon[4];
-const int no_points = 10;
-double points_lat[no_points * 2];
-double points_lon[no_points * 2];
+int no_points = 10;
+double points_lat[100];
+double points_lon[100];
 double dist = 0;
 const double toRadian = 0.01745329251;
 const double toDegree = 57.2957795131;
@@ -134,6 +141,13 @@ void get_points()
     f++, i++;
     intermediate_point(lat2, lon2, lat3, lon3, c, (double)f / no_points, i);
   }
+  ss_bluetooth.listen();
+  for (int i = 0; i < no_points * 2; i++)
+  {
+    ss_bluetooth.print(points_lat[i], 6);
+    ss_bluetooth.print(",");
+    ss_bluetooth.println(points_lon[i], 6);
+  }
 }
 
 double get_rel_brng_update_dist(double lat2, double lon2)
@@ -198,15 +212,33 @@ void motor(double relBearing)
   // Serial.print("      Right Motor: ");
   // Serial.println(right);
 
-  analogWrite(LEFT_MOTOR, left);
-  analogWrite(RIGHT_MOTOR, right);
+  analogWrite(left_motor_pwm, left);
+  analogWrite(right_motor_pwm, right);
 }
 
-void motor_bluetooth(int left, int right)
+void motor_bluetooth(int a, int b)
 {
-  analogWrite(LEFT_MOTOR, left);
-  analogWrite(RIGHT_MOTOR, right);
-  delay(100);
+  bool l, r;
+  if (a < 0)
+    l = HIGH;
+  else
+    l = LOW;
+  if (b < 0)
+    r = HIGH;
+  else
+    r = LOW;
+  //  a = constrain(a,-255,255);
+  //  b = constrain(b,-255,255);
+  if (abs(a) > 255)
+    a = 255;
+  if (abs(b) > 255)
+    b = 255;
+  digitalWrite(left_motor_A, l);
+  digitalWrite(left_motor_B, !l);
+  analogWrite(left_motor_pwm, abs(a));
+  digitalWrite(right_motor_C, r);
+  digitalWrite(right_motor_D, !r);
+  analogWrite(right_motor_pwm, abs(b));
 }
 
 void autodrive()
@@ -231,8 +263,26 @@ void autodrive()
       }
       if (index >= no_points * 2)
       {
+        motor_bluetooth(0, 0);
         break;
       }
+      // ss_bluetooth.listen();
+      // if (ss_bluetooth.available())
+      // {
+      //   char c = ss_bluetooth.read();
+      //   if (c == 'm')
+      //   {
+      //     motor_bluetooth(0, 0);
+      //   }
+      // }
+    }
+    if (digitalRead(esp_pin) == 1)
+    {
+      digitalWrite(waste_pull_motor, HIGH);
+    }
+    else
+    {
+      digitalWrite(waste_pull_motor, LOW);
     }
   }
   auto_mode = false;
@@ -245,27 +295,39 @@ bool read_bluetooth_coordinates()
   int cnt = 0;
   String coord = "";
 
-  // Serial.println();
-  if (ss_bluetooth.available())
-  {
-    while (ss_bluetooth.available())
+  while (1)
+    if (ss_bluetooth.available())
     {
       char c = ss_bluetooth.read();
-      if ((c == '\n') || (c == '\r'))
+      if (c == '#')
       {
-        get_points();
+        if (coord.length() >= 1)
+        {
+          no_points = coord.toInt();
+          coord = ""; // clears variable for new input
+        }
+
         auto_mode = true;
+        ss_bluetooth.print("Sweep value: ");
+        ss_bluetooth.println(no_points);
+        ss_bluetooth.println("Coordinates are:");
+        for (int i = 0; i < 4; i++)
+        {
+          ss_bluetooth.print("coord-");
+          ss_bluetooth.print(i + 1);
+          ss_bluetooth.print(": Lat: ");
+          ss_bluetooth.print(coordinates_lat[i], 5);
+          ss_bluetooth.print(" Lng: ");
+          ss_bluetooth.println(coordinates_lon[i], 5);
+        }
+        get_points();
         return false;
       }
       if (c == ',')
       {
         if (coord.length() > 1)
         {
-          Serial.print(coord); // prints string to serial port out
-          Serial.print(',');   // prints delimiting ","
           coordinates_lat[cnt] = coord.toDouble();
-          // Serial.print(coordinates[cnt], 6);
-          // Serial.println(',');
           coord = ""; // clears variable for new input
         }
       }
@@ -273,11 +335,7 @@ bool read_bluetooth_coordinates()
       {
         if (coord.length() > 1)
         {
-          Serial.print(coord); // prints string to serial port out
-          Serial.print(';');   // prints delimiting ","
           coordinates_lon[cnt] = coord.toDouble();
-          // Serial.print(coordinates[cnt], 6);
-          // Serial.println(',');
           cnt++;
           coord = ""; // clears variable for new input
         }
@@ -287,7 +345,6 @@ bool read_bluetooth_coordinates()
         coord += c; // makes the string readString
       }
     }
-  }
   return true;
 }
 
@@ -306,22 +363,25 @@ bool bluetooth_drive()
     }
     else if (c == 'a')
     {
-      motor_bluetooth(0, RIGHT_topSpeed);
+      motor_bluetooth(-LEFT_topSpeed, RIGHT_topSpeed);
     }
-    else if (c == 'f')
+    else if (c == 'd')
     {
-      motor_bluetooth(LEFT_topSpeed, 0);
+      motor_bluetooth(LEFT_topSpeed, -RIGHT_topSpeed);
     }
     else if (c == 'm')
     {
+      motor_bluetooth(0, 0);
       ss_bluetooth.println("returning to mode");
       return false;
     }
     else
     {
+      motor_bluetooth(0, 0);
       return true;
     }
   }
+  motor_bluetooth(0, 0);
   return true;
 }
 
@@ -365,8 +425,13 @@ void setup()
   pinMode(LED_pin, OUTPUT);
 
   // motor init
-  pinMode(LEFT_MOTOR, OUTPUT);
-  pinMode(RIGHT_MOTOR, OUTPUT);
+  pinMode(left_motor_pwm, OUTPUT);
+  pinMode(right_motor_pwm, OUTPUT);
+  pinMode(left_motor_A, OUTPUT);
+  pinMode(left_motor_B, OUTPUT);
+  pinMode(right_motor_C, OUTPUT);
+  pinMode(right_motor_D, OUTPUT);
+  pinMode(waste_pull_motor, OUTPUT);
 
   ss_bluetooth.listen();
   ss_bluetooth.println("Select Mode (1 for autodrive, 2 for manual drive): ");
