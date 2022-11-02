@@ -1,5 +1,7 @@
 #include <Arduino.h>
 
+#include <EEPROMEx.h>
+
 #include <Wire.h>
 
 #include <TinyGPSplus.h>
@@ -8,48 +10,52 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_HMC5883_U.h>
 
-#define GPS_RX 3
+#define GPS_RX 12
 #define GPS_TX 2
-#define bluetooth_RX 8
-#define bluetooth_TX 9
 #define GPS_BAUD 9600
 #define bluetooth_BAUD 9600
-#define WAYPOINT_THRESHHOLD 5
+#define WAYPOINT_THRESHHOLD 4
 #define LED_pin 13
 
-#define dummy_lat 30
-#define dummy_lng -80
+#define dummy_lat 24.36728
+#define dummy_lng 88.62554
 
-#define left_motor_pwm 3
-#define left_motor_A 4
-#define left_motor_B 5
-#define right_motor_C 6
-#define right_motor_D 7
-#define right_motor_pwm 8
+#define left_f_pwm 3
+#define left_b_pwm 5
+#define left_ena 4
+#define right_f_pwm 9
+#define right_b_pwm 6
+#define right_ena 7
+
 #define waste_pull_motor 11
-#define esp_pin 13
+#define esp_pin 2
 
-#define LEFT_topSpeed 150
-#define RIGHT_topSpeed 150
+#define LEFT_topSpeed 200
+#define RIGHT_topSpeed 200
+
+unsigned long gpsReadStart = 0, gpsReadTime = 0, wasteReadTime = 0;
 
 TinyGPSPlus gps;
 Adafruit_HMC5883_Unified mag = Adafruit_HMC5883_Unified(12345);
 
-SoftwareSerial ss_gps(GPS_RX, GPS_TX);
+SoftwareSerial ss_gps(12, 10);
 SoftwareSerial ss_bluetooth(A3, A2);
 
-double lat1, lon1, k_L = LEFT_topSpeed / 180, k_R = RIGHT_topSpeed / 180;
+double k_L = LEFT_topSpeed / 180, k_R = RIGHT_topSpeed / 180;
 double coordinates_lat[4], coordinates_lon[4];
 int no_points = 10;
-double points_lat[100];
-double points_lon[100];
+double points_lat[20];
+double points_lon[20];
+int sharp[10] = {1, 1, 2, 3, 4, 1, 2, 3, 4, 1};
 double dist = 0;
 const double toRadian = 0.01745329251;
 const double toDegree = 57.2957795131;
 bool auto_mode = false;
+double llat, llon;
 
 void compass_init()
 {
+  Wire.begin();
   if (!mag.begin())
   {
     Serial.println("no HMC5883 detected");
@@ -141,7 +147,7 @@ void get_points()
     f++, i++;
     intermediate_point(lat2, lon2, lat3, lon3, c, (double)f / no_points, i);
   }
-  ss_bluetooth.listen();
+  // ss_bluetooth.listen();
   for (int i = 0; i < no_points * 2; i++)
   {
     ss_bluetooth.print(points_lat[i], 6);
@@ -154,15 +160,28 @@ double get_rel_brng_update_dist(double lat2, double lon2)
 {
   // http://www.movable-type.co.uk/scripts/latlong.html
   // Conversion factor from degrees to radians (pi/180)
-
-  ss_gps.listen();
-  while (ss_gps.available() > 0)
-    gps.encode(ss_gps.read());
-
+  double lat1, lon1;
+  // Serial.println("Reading GPS");
+  ss_bluetooth.end();
+  ss_gps.begin(GPS_BAUD);
+  gpsReadTime = millis();
+  while (millis() - gpsReadTime < 250)
+  {
+    if (ss_gps.available() > 0)
+    {
+      // Serial.println("Parsing GPS Data");
+      gps.encode(ss_gps.read());
+      // Serial.println(ss_gps.read());
+    }
+  }
+  // Serial.println(gps.location.lat());
   if (gps.location.isValid()) // ********
   {
+    // Serial.println("Co ordinate found");
     lat1 = gps.location.lat();
+    llat = lat1;
     lon1 = gps.location.lng();
+    llon = lon1;
 
     // theta
     lat1 *= toRadian;
@@ -186,165 +205,350 @@ double get_rel_brng_update_dist(double lat2, double lon2)
     dist = 6371 * c * 1000;
 
     double heading = heading_compass(); // updates compass heading
+    ss_gps.end();
+    ss_bluetooth.begin(bluetooth_BAUD);
+    // Serial.print("C: ");
+    // Serial.println(heading);
     return (brng - heading);
   }
   else
   {
+    ss_gps.end();
+    ss_bluetooth.begin(bluetooth_BAUD);
     return 1000;
   }
+}
+
+void show_save_coord(int i)
+{
+  double lat1, lon1;
+  bool k = false;
+  // Serial.println("Reading GPS");
+  ss_bluetooth.end();
+  ss_gps.begin(GPS_BAUD);
+  gpsReadTime = millis();
+  while (millis() - gpsReadTime < 250)
+  {
+    if (ss_gps.available() > 0)
+    {
+      // Serial.println("Parsing GPS Data");
+      gps.encode(ss_gps.read());
+      // Serial.println(ss_gps.read());
+    }
+  }
+  if (gps.location.isValid()) // ********
+  {
+    // Serial.println("Co ordinate found");
+    lat1 = gps.location.lat();
+    llat = lat1;
+    lon1 = gps.location.lng();
+    llon = lon1;
+    // ss_gps.end();
+    // ss_bluetooth.begin(bluetooth_BAUD);
+    // Serial.print("C: ");
+    // Serial.println(heading);
+    k = true;
+  }
+  else
+  {
+    k = false;
+  }
+  ss_gps.end();
+  ss_bluetooth.begin(bluetooth_BAUD);
+  if (k)
+  {
+    ss_bluetooth.print("lat:");
+    ss_bluetooth.print(llat, 6);
+    ss_bluetooth.print("lon:");
+    ss_bluetooth.println(llon, 6);
+    coordinates_lat[i] = llat;
+    coordinates_lon[i] = llon;
+  }
+}
+
+void motor_bluetooth(int lf, int lb, int rf, int rb)
+{
+  analogWrite(left_f_pwm, lf);
+  analogWrite(left_b_pwm, lb);
+  analogWrite(right_f_pwm, rf);
+  analogWrite(right_b_pwm, rb);
 }
 
 void motor(double relBearing)
 {
   int left, right;
-  if (relBearing > 0)
+  if (relBearing == 0)
+  {
     left = LEFT_topSpeed;
-  else
-    left = (int)k_L * relBearing + LEFT_topSpeed;
-
-  if (relBearing <= 0)
     right = RIGHT_topSpeed;
+  }
+  // else if(relBearing >60){
+  //   left = LEFT_topSpeed;
+  //   right = 0;
+  // }
+  // else if(relBearing <-60){
+  //   left = 0;
+  //   right = RIGHT_topSpeed;
+  // }
   else
-    right = (int)-k_R * relBearing + RIGHT_topSpeed;
+  {
+    if (relBearing > 0)
+      left = LEFT_topSpeed;
+    else
+      left = (int)k_L * relBearing + LEFT_topSpeed;
 
-  // Serial.print("Left Motor: ");
-  // Serial.print(left);
-  // Serial.print("      Right Motor: ");
-  // Serial.println(right);
+    if (relBearing < 0)
+      right = RIGHT_topSpeed;
+    else
+      right = (int)-k_R * relBearing + RIGHT_topSpeed;
+  }
 
-  analogWrite(left_motor_pwm, left);
-  analogWrite(right_motor_pwm, right);
-}
+  ss_bluetooth.print("Left:");
+  ss_bluetooth.print(left);
+  ss_bluetooth.print(" Right:");
+  ss_bluetooth.println(right);
 
-void motor_bluetooth(int a, int b)
-{
-  bool l, r;
-  if (a < 0)
-    l = HIGH;
-  else
-    l = LOW;
-  if (b < 0)
-    r = HIGH;
-  else
-    r = LOW;
-  //  a = constrain(a,-255,255);
-  //  b = constrain(b,-255,255);
-  if (abs(a) > 255)
-    a = 255;
-  if (abs(b) > 255)
-    b = 255;
-  digitalWrite(left_motor_A, l);
-  digitalWrite(left_motor_B, !l);
-  analogWrite(left_motor_pwm, abs(a));
-  digitalWrite(right_motor_C, r);
-  digitalWrite(right_motor_D, !r);
-  analogWrite(right_motor_pwm, abs(b));
+  if (left > 0 && right > 0)
+    motor_bluetooth(left, 0, right, 0);
+  else if (left > 0 && right < 0)
+    motor_bluetooth(left, 0, 0, right);
+  else if (left < 0 && right < 0)
+    motor_bluetooth(0, left, right, 0);
+  else if (left < 0 && right > 0)
+    motor_bluetooth(0, left, right, 0);
 }
 
 void autodrive()
 {
+  digitalWrite(waste_pull_motor, HIGH);
   int index = 0;
   while (1)
   {
-    double rel_brng = get_rel_brng_update_dist(points_lat[index], points_lon[index]);
+    double rel_brng = get_rel_brng_update_dist(coordinates_lat[index], coordinates_lon[index]);
+
     if (rel_brng == 1000)
     {
-      motor_bluetooth(0, 0);
-      ss_bluetooth.listen();
+      // digitalWrite(waste_pull_motor, LOW);
+      motor_bluetooth(0, 0, 0, 0);
+      // ss_bluetooth.listen();
       ss_bluetooth.println("Waiting for GPS");
       delay(1000);
     }
     else
     {
+      ss_bluetooth.print("R:");
+      ss_bluetooth.print(rel_brng);
+      ss_bluetooth.print(" D:");
+      ss_bluetooth.print(dist);
+      ss_bluetooth.print(" I:");
+      ss_bluetooth.println(index);
       motor(rel_brng);
-      if (dist < WAYPOINT_THRESHHOLD)
+      if (index >= 4) // no_points * 2
       {
-        index++;
-      }
-      if (index >= no_points * 2)
-      {
-        motor_bluetooth(0, 0);
+        ss_bluetooth.println("final found");
+        // ss_bluetooth.println(index);
+        motor_bluetooth(0, 0, 0, 0);
         break;
       }
+      if (dist < WAYPOINT_THRESHHOLD)
+      {
+        ss_bluetooth.print("Coord found ");
+        ss_bluetooth.println(index);
+        motor_bluetooth(0, 0, 0, 0);
+        delay(7000);
+        // if (sharp[index] == 2)
+        // {
+        //   motor_bluetooth(255, 0);
+        //   delay(900);
+        //   motor_bluetooth(0, 0);
+        // }
+        // else if (sharp[index] == 4)
+        // {
+        //   motor_bluetooth(0, 255);
+        //   delay(900);
+        //   motor_bluetooth(0, 0);
+        // }
+        index++;
+      }
+      // if (rel_brng > 170 || rel_brng < -170)
+      // {
+      //   ss_bluetooth.println("coord found by rel brng");
+      //   index++;
+      // }
+
       // ss_bluetooth.listen();
       // if (ss_bluetooth.available())
       // {
       //   char c = ss_bluetooth.read();
       //   if (c == 'm')
       //   {
+      //     ss_bluetooth.println("returning to main menu");
       //     motor_bluetooth(0, 0);
+      //     break;
       //   }
+      //   // else if (c == 'w')
+      //   // {
+      //   //   digitalWrite(waste_pull_motor, HIGH);
+      //   // }
+      //   // else if (c == 's')
+      //   // {
+      //   //   digitalWrite(waste_pull_motor, LOW);
+      //   // }
       // }
     }
     if (digitalRead(esp_pin) == 1)
     {
+      wasteReadTime = millis();
+      digitalWrite(waste_pull_motor, LOW);
+      // delay(5000);
+    }
+    if (millis() - wasteReadTime > 5000)
+    {
       digitalWrite(waste_pull_motor, HIGH);
+    }
+  }
+
+  auto_mode = false;
+  // ss_bluetooth.listen();
+  ss_bluetooth.println("Select Mode (1 for autodrive, 2 for manual drive): ");
+}
+
+void autodrive_coord()
+{
+  digitalWrite(waste_pull_motor, HIGH);
+  int index = 0;
+  while (1)
+  {
+    double rel_brng = get_rel_brng_update_dist(points_lat[index], points_lon[index]);
+
+    if (rel_brng == 1000)
+    {
+      // digitalWrite(waste_pull_motor, LOW);
+      motor_bluetooth(0, 0, 0, 0);
+      // ss_bluetooth.listen();
+      ss_bluetooth.println("Waiting for GPS");
+      delay(1000);
     }
     else
     {
-      digitalWrite(waste_pull_motor, LOW);
+      ss_bluetooth.print("R:");
+      ss_bluetooth.print(rel_brng);
+      ss_bluetooth.print(" D:");
+      ss_bluetooth.print(dist);
+      ss_bluetooth.print(" I:");
+      ss_bluetooth.println(index);
+      motor(rel_brng);
+      if (index >= 4) // no_points * 2
+      {
+        ss_bluetooth.println("final found");
+        // ss_bluetooth.println(index);
+        motor_bluetooth(0, 0, 0, 0);
+        break;
+      }
+      if (dist < WAYPOINT_THRESHHOLD)
+      {
+        ss_bluetooth.print("Coord found ");
+        ss_bluetooth.println(index);
+        motor_bluetooth(0, 0, 0, 0);
+        delay(7000);
+        index++;
+      }
     }
   }
+
   auto_mode = false;
-  ss_bluetooth.listen();
   ss_bluetooth.println("Select Mode (1 for autodrive, 2 for manual drive): ");
 }
 
 bool read_bluetooth_coordinates()
 {
   int cnt = 0;
-  String coord = "";
-
+  ss_gps.end();
+  ss_bluetooth.begin(bluetooth_BAUD);
   while (1)
+  {
     if (ss_bluetooth.available())
     {
-      char c = ss_bluetooth.read();
-      if (c == '#')
+      // while (ss_bluetooth.available())
+      // {
+      String c = ss_bluetooth.readString();
+      Serial.println(c.length());
+      Serial.print(c);
+      String coord = "";
+      for (int i = 0; i < (int)c.length(); i++)
       {
-        if (coord.length() >= 1)
+        if (c[i] == '#')
         {
-          no_points = coord.toInt();
-          coord = ""; // clears variable for new input
-        }
+          if (coord.length() >= 1)
+          {
+            // Serial.print("No point: ");
+            // Serial.println(coord); // prints string to serial port out
+            // Serial.print(';');   // prints delimiting ","
+            no_points = coord.toInt();
+            // Serial.println(no_points);
+            // Serial.println(',');
+            // cnt++;
+            coord = ""; // clears variable for new input
+          }
 
-        auto_mode = true;
-        ss_bluetooth.print("Sweep value: ");
-        ss_bluetooth.println(no_points);
-        ss_bluetooth.println("Coordinates are:");
-        for (int i = 0; i < 4; i++)
-        {
-          ss_bluetooth.print("coord-");
-          ss_bluetooth.print(i + 1);
-          ss_bluetooth.print(": Lat: ");
-          ss_bluetooth.print(coordinates_lat[i], 5);
-          ss_bluetooth.print(" Lng: ");
-          ss_bluetooth.println(coordinates_lon[i], 5);
+          auto_mode = true;
+          ss_bluetooth.print("Sweep value: ");
+          ss_bluetooth.println(no_points);
+          ss_bluetooth.println("Coordinates are:");
+          for (int i = 0; i < 4; i++)
+          {
+            ss_bluetooth.print("coord-");
+            ss_bluetooth.print(i + 1);
+            ss_bluetooth.print(": Lat: ");
+            ss_bluetooth.print(coordinates_lat[i], 5);
+            ss_bluetooth.print(" Lng: ");
+            ss_bluetooth.println(coordinates_lon[i], 5);
+            // Serial.print("coord-");
+            // Serial.print(i + 1);
+            // Serial.print(": Lat: ");
+            // Serial.print(coordinates_lat[i], 5);
+            // Serial.print(" Lng: ");
+            // Serial.println(coordinates_lon[i], 5);
+          }
+          get_points();
+          return false;
         }
-        get_points();
-        return false;
-      }
-      if (c == ',')
-      {
-        if (coord.length() > 1)
+        else if (c[i] == ',')
         {
-          coordinates_lat[cnt] = coord.toDouble();
-          coord = ""; // clears variable for new input
+          if (coord.length() > 1)
+          {
+            // Serial.print(coord); // prints string to serial port out
+            // Serial.print("coorda"); // prints delimiting ","
+            // Serial.
+            // coordinates_lat[cnt] = coord.toDouble();
+            coordinates_lat[cnt] = coord.toDouble();
+            // Serial.print(coordinates_lat[cnt], 6);
+            // Serial.println(',');
+
+            coord = ""; // clears variable for new input
+          }
         }
-      }
-      else if (c == ';')
-      {
-        if (coord.length() > 1)
+        else if (c[i] == ';')
         {
-          coordinates_lon[cnt] = coord.toDouble();
-          cnt++;
-          coord = ""; // clears variable for new input
+          if (coord.length() > 1)
+          {
+            // Serial.print("coordg"); // prints string to serial port out
+            // Serial.print(';');   // prints delimiting ","
+            coordinates_lon[cnt] = coord.toDouble();
+            // Serial.print(coordinates_lon[cnt], 6);
+            // Serial.println(',');
+            cnt++;
+            coord = ""; // clears variable for new input
+          }
         }
-      }
-      else
-      {
-        coord += c; // makes the string readString
+        else
+        {
+          coord += c[i]; // makes the string readString
+        }
       }
     }
+  }
+  // Serial.println("nn");
   return true;
 }
 
@@ -355,44 +559,87 @@ bool bluetooth_drive()
     char c = ss_bluetooth.read();
     if (c == 'w')
     {
-      motor_bluetooth(LEFT_topSpeed, RIGHT_topSpeed);
+      motor_bluetooth(LEFT_topSpeed, 0, RIGHT_topSpeed, 0);
     }
     else if (c == 's')
     {
-      motor_bluetooth(-LEFT_topSpeed, -RIGHT_topSpeed);
+      motor_bluetooth(0, LEFT_topSpeed, 0, RIGHT_topSpeed);
     }
     else if (c == 'a')
     {
-      motor_bluetooth(-LEFT_topSpeed, RIGHT_topSpeed);
+      motor_bluetooth(0, LEFT_topSpeed, RIGHT_topSpeed, 0);
     }
     else if (c == 'd')
     {
-      motor_bluetooth(LEFT_topSpeed, -RIGHT_topSpeed);
+      motor_bluetooth(LEFT_topSpeed, 0, 0, RIGHT_topSpeed);
     }
     else if (c == 'm')
     {
-      motor_bluetooth(0, 0);
+      motor_bluetooth(0, 0, 0, 0);
       ss_bluetooth.println("returning to mode");
       return false;
     }
+    else if (c == 'e')
+    {
+      digitalWrite(waste_pull_motor, HIGH);
+    }
+    else if (c == 'r')
+    {
+      digitalWrite(waste_pull_motor, LOW);
+    }
+    else if (c == 'z')
+    {
+      ss_bluetooth.println("saving coord 0");
+      show_save_coord(0);
+    }
+    else if (c == 'x')
+    {
+      ss_bluetooth.println("saving coord 1");
+      show_save_coord(1);
+    }
+    else if (c == 'c')
+    {
+      ss_bluetooth.println("saving coord 2");
+      show_save_coord(2);
+    }
+    else if (c == 'v')
+    {
+      ss_bluetooth.println("saving coord 3");
+      show_save_coord(3);
+    }
+    else if (c == 'b')
+    {
+      ss_bluetooth.println("Showing coords");
+      for (int i = 0; i < 4; i++)
+      {
+        ss_bluetooth.print(i);
+        ss_bluetooth.print(": lat-");
+        ss_bluetooth.print(coordinates_lat[i]);
+        ss_bluetooth.print(" lon-");
+        ss_bluetooth.println(coordinates_lon[i]);
+      }
+    }
     else
     {
-      motor_bluetooth(0, 0);
+      digitalWrite(waste_pull_motor, HIGH);
+      motor_bluetooth(0, 0, 0, 0);
       return true;
     }
   }
-  motor_bluetooth(0, 0);
+  // motor_bluetooth(0, 0);
   return true;
 }
 
 void select_mode_bluetooth()
 {
-  ss_bluetooth.listen();
+  // ss_bluetooth.listen();
+
   if (ss_bluetooth.available())
   {
     char c = ss_bluetooth.read();
     if (c == '1')
     {
+      Serial.println("1");
       ss_bluetooth.println("Enter coordinates");
       while (read_bluetooth_coordinates())
       {
@@ -400,6 +647,7 @@ void select_mode_bluetooth()
     }
     else if (c == '2')
     {
+      Serial.println("2");
       ss_bluetooth.println("Drive mode: awsd for navigation, m for return to mode");
       while (bluetooth_drive())
       {
@@ -412,39 +660,118 @@ void select_mode_bluetooth()
   }
 }
 
+void show_motor(double relBearing)
+{
+  int left, right;
+  if (relBearing == 0)
+  {
+    left = LEFT_topSpeed;
+    right = RIGHT_topSpeed;
+  }
+  else
+  {
+    if (relBearing > 0)
+      left = LEFT_topSpeed;
+    else
+      left = (int)k_L * relBearing + LEFT_topSpeed;
+
+    if (relBearing < 0)
+      right = RIGHT_topSpeed;
+    else
+      right = (int)-k_R * relBearing + RIGHT_topSpeed;
+  }
+
+  ss_bluetooth.print("Left: ");
+  ss_bluetooth.print(left);
+  ss_bluetooth.print("  Right: ");
+  ss_bluetooth.println(right);
+}
+
+int ind = 0;
+void show_rel_dist()
+{
+  double rel = get_rel_brng_update_dist(coordinates_lat[ind], coordinates_lon[ind]);
+  if (rel == 1000)
+  {
+    ss_bluetooth.println("wait for gps");
+    double h = heading_compass();
+    ss_bluetooth.print("C");
+    ss_bluetooth.println(h);
+  }
+  else
+  {
+    if (dist < WAYPOINT_THRESHHOLD)
+    {
+      ss_bluetooth.print("point found: ");
+      ss_bluetooth.println(ind);
+      ind++;
+    }
+    if (ind >= no_points)
+    {
+      ind = 0;
+      ss_bluetooth.println("final point reached");
+      auto_mode = false;
+    }
+    ss_bluetooth.print("R: ");
+    ss_bluetooth.print(rel);
+    ss_bluetooth.print("  D: ");
+    ss_bluetooth.println(dist);
+    ss_bluetooth.print("lat:");
+    ss_bluetooth.print(llat);
+    ss_bluetooth.print(" lon:");
+    ss_bluetooth.println(llon);
+    show_motor(rel);
+    // motor(rel);
+  }
+  delay(1500);
+}
+
 void setup()
 {
   Serial.begin(9600);
+  Serial.println("I am on");
   // i2c begin for HMC5883L compass sensor
-  Wire.begin();
   compass_init();
   // Software serial for GPS
-  ss_gps.begin(GPS_BAUD);
+  // ss_gps.begin(GPS_BAUD);
   ss_bluetooth.begin(bluetooth_BAUD);
   // led init
   pinMode(LED_pin, OUTPUT);
 
   // motor init
-  pinMode(left_motor_pwm, OUTPUT);
-  pinMode(right_motor_pwm, OUTPUT);
-  pinMode(left_motor_A, OUTPUT);
-  pinMode(left_motor_B, OUTPUT);
-  pinMode(right_motor_C, OUTPUT);
-  pinMode(right_motor_D, OUTPUT);
-  pinMode(waste_pull_motor, OUTPUT);
+  for (int i = 3; i < 10; i++)
+  {
+    pinMode(i, OUTPUT);
+  }
 
-  ss_bluetooth.listen();
+  digitalWrite(left_ena, HIGH);
+  digitalWrite(right_ena, HIGH);
+  analogWrite(left_f_pwm, 0);
+  analogWrite(left_b_pwm, 0);
+  analogWrite(right_f_pwm, 0);
+  analogWrite(right_b_pwm, 0);
+
+  pinMode(waste_pull_motor, OUTPUT);
+  digitalWrite(waste_pull_motor, HIGH);
+
+  pinMode(esp_pin, INPUT);
+
+  // ss_bluetooth.listen();
   ss_bluetooth.println("Select Mode (1 for autodrive, 2 for manual drive): ");
 }
 
 void loop()
 {
-  // show_xy_compass();
-  // show_head_compass();
   select_mode_bluetooth();
   if (auto_mode)
   {
     autodrive();
   }
+  // Serial.println(heading_compass());
+  // delay(1000);
+  // if (auto_mode)
+  // {
+  //   show_rel_dist();
+  // }
   // delay(1000);
 }
